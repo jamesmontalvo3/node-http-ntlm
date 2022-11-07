@@ -8,6 +8,56 @@
 
 var crypto = require('crypto');
 
+// There are required instead of built-in `crypto` module due to security improvements added in
+// Node 17+:
+//   - DES-ECB cipher is used in all NTLM auth
+//   - MD4 has is used in NTLM v1 auth
+var CryptoJS = require('crypto-js');
+var md4 = require('js-md4');
+
+/**
+ * See https://gist.github.com/ufologist/5581486
+ */
+function encryptByDES(message, key) {
+    var keyHex = CryptoJS.enc.Utf8.parse(key);
+	if (typeof message !== 'string') {
+		message = message.toString();
+	}
+
+    var encrypted = CryptoJS.DES.encrypt(message, keyHex, {
+        mode: CryptoJS.mode.ECB,
+        padding: CryptoJS.pad.ZeroPadding,
+    });
+    return new Buffer(encrypted.toString());
+}
+
+function calculateDES(key, message) {
+	let desKey = new Buffer(8);
+
+	desKey[0] = key[0] & 0xFE;
+	desKey[1] = ((key[0] << 7) & 0xFF) | (key[1] >> 1);
+	desKey[2] = ((key[1] << 6) & 0xFF) | (key[2] >> 2);
+	desKey[3] = ((key[2] << 5) & 0xFF) | (key[3] >> 3);
+	desKey[4] = ((key[3] << 4) & 0xFF) | (key[4] >> 4);
+	desKey[5] = ((key[4] << 3) & 0xFF) | (key[5] >> 5);
+	desKey[6] = ((key[5] << 2) & 0xFF) | (key[6] >> 6);
+	desKey[7] = (key[6] << 1) & 0xFF;
+
+	for (let i = 0; i < 8; i++) {
+		let parity = 0;
+
+		for (let j = 1; j < 8; j++) {
+			parity += (desKey[i] >> j) % 2;
+		}
+
+		desKey[i] |= (parity % 2) === 0 ? 1 : 0;
+	}
+
+	// let des = crypto.createCipheriv('DES-ECB', desKey, '');
+	// return des.update(message);
+	return encryptByDES(message, desKey);
+}
+
 var flags = {
 	NTLM_NegotiateUnicode                :  0x00000001,
 	NTLM_NegotiateOEM                    :  0x00000002,
@@ -273,8 +323,7 @@ function create_LM_hashed_password_v1(password){
 
 	function encrypt(buf){
 		var key = insertZerosEvery7Bits(buf);
-		var des = crypto.createCipheriv('DES-ECB', key, '');
-		return des.update("KGS!@#$%"); // page 57 in [MS-NLMP]);
+		return calculateDES(key, "KGS!@#$%"); // page 57 in [MS-NLMP]);
 	}
 
 	var firstPartEncrypted = encrypt(firstPart);
@@ -365,9 +414,7 @@ function binaryArray2bytes(array){
 
 function create_NT_hashed_password_v1(password){
 	var buf = new Buffer(password, 'utf16le');
-	var md4 = crypto.createHash('md4');
-	md4.update(buf);
-	return new Buffer(md4.digest());
+	return new Buffer(md4.digest(buf));
 }
 
 function calc_resp(password_hash, server_challenge){
@@ -378,14 +425,20 @@ function calc_resp(password_hash, server_challenge){
 
     var resArray = [];
 
-    var des = crypto.createCipheriv('DES-ECB', insertZerosEvery7Bits(passHashPadded.slice(0,7)), '');
-    resArray.push( des.update(server_challenge.slice(0,8)) );
+    resArray.push(calculateDES(
+		insertZerosEvery7Bits(passHashPadded.slice(0,7)),
+		server_challenge.slice(0,8)
+	));
 
-    des = crypto.createCipheriv('DES-ECB', insertZerosEvery7Bits(passHashPadded.slice(7,14)), '');
-    resArray.push( des.update(server_challenge.slice(0,8)) );
+    resArray.push(calculateDES(
+		insertZerosEvery7Bits(passHashPadded.slice(7,14)),
+		server_challenge.slice(0,8)
+	));
 
-    des = crypto.createCipheriv('DES-ECB', insertZerosEvery7Bits(passHashPadded.slice(14,21)), '');
-    resArray.push( des.update(server_challenge.slice(0,8)) );
+    resArray.push(calculateDES(
+		insertZerosEvery7Bits(passHashPadded.slice(14,21)),
+		server_challenge.slice(0,8)
+	));
 
    	return Buffer.concat(resArray);
 }
